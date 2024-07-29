@@ -11,7 +11,19 @@ This guide provides step-by-step instructions to deploy a Flask-based ToDo List 
 - Terraform installed
 - Ansible installed
 - jq installed for JSON parsing
-- A GitHub repository containing the Flask application
+
+  To install `jq` using Homebrew on Mac, run:
+
+  ```sh
+  brew install jq
+  ```
+
+  On WSL (Windows Subsystem for Linux) running Ubuntu, you can install `jq` using `apt-get`.
+
+  ```sh
+  sudo apt-get update
+  sudo apt-get install jq
+  ```
 
 ## Directory Structure
 
@@ -20,8 +32,8 @@ todo_assessment2/
 ├── ansible/
 │   ├── ansible.cfg
 │   ├── playbook.yml
-│   ├── hosts (created dynamically)
-│   ├── terraform_outputs.json (created dynamically)
+│   ├── hosts (created dynamically after running the deployment script)
+│   ├── terraform_outputs.json (created dynamically after running the deployment script)
 ├── terraform/
 │   ├── iam.tf
 │   ├── main.tf
