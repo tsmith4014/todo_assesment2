@@ -1,0 +1,168 @@
+---
+- name: Setup Flask application on Amazon Linux EC2
+  hosts: all
+  become: yes
+  gather_facts: yes
+  vars:
+    repo_url: "https://github.com/chandradeoarya/todolist-flask.git"
+    branch: "env"
+    app_dir: "/home/ec2-user/todolist-flask"
+    env_file: "{{ app_dir }}/.env"
+    dependencies:
+      - flask
+      - flask-mysql
+      - cryptography
+      - flask-cors
+      - python-dotenv
+      - gunicorn
+    aws_dependencies:
+      - boto3
+      - botocore
+    backend_port: 8080
+    terraform_outputs: "{{ lookup('file', 'terraform_outputs.json') | from_json }}"
+    backend_server_ip: "{{ terraform_outputs.ec2_instance_public_ip.value }}"
+    database_server_ip: "{{ terraform_outputs.database_server_ip.value }}"
+    s3_bucket_name: "{{ terraform_outputs.s3_bucket_website_url.value.split('.')[0] }}"
+    env_vars:
+      MYSQL_DATABASE_HOST: "cpmysql-instance-1.cb2w0g4uwlya.us-east-1.rds.amazonaws.com"
+      MYSQL_DATABASE_PORT: "3306"
+      MYSQL_DATABASE: "chaddb"
+      MYSQL_DATABASE_USER: "admin"
+      MYSQL_DATABASE_PASSWORD: "Bravo2024"
+
+  tasks:
+    - name: Update all packages
+      command: sudo yum update -y
+
+    - name: Install Git
+      command: sudo yum install -y git
+
+    - name: Install Python 3
+      command: sudo yum install -y python3
+
+    - name: Install Python 3 pip
+      command: sudo yum install -y python3-pip
+
+    - name: Install Nginx using amazon-linux-extras
+      command: sudo amazon-linux-extras install -y nginx1
+
+    - name: Clone the Flask application repository
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ app_dir }}"
+        version: "{{ branch }}"
+        force: yes
+
+    - name: Create virtual environment
+      command: python3 -m venv {{ app_dir }}/venv
+
+    - name: Set Python interpreter to virtual environment
+      set_fact:
+        ansible_python_interpreter: "{{ app_dir }}/venv/bin/python"
+
+    - name: Install Python dependencies
+      command: "{{ app_dir }}/venv/bin/pip install {{ item }}"
+      loop: "{{ dependencies }}"
+      environment:
+        PATH: "{{ app_dir }}/venv/bin:{{ ansible_env.PATH }}"
+
+    - name: Install AWS dependencies in virtual environment
+      command: "{{ app_dir }}/venv/bin/pip install {{ item }}"
+      loop: "{{ aws_dependencies }}"
+      environment:
+        PATH: "{{ app_dir }}/venv/bin:{{ ansible_env.PATH }}"
+
+    - name: Pause for IAM policy propagation
+      pause:
+        seconds: 30
+
+    - name: Create .env file
+      copy:
+        dest: "{{ env_file }}"
+        content: |
+          MYSQL_DATABASE_HOST={{ env_vars.MYSQL_DATABASE_HOST }}
+          MYSQL_DATABASE_PORT={{ env_vars.MYSQL_DATABASE_PORT }}
+          MYSQL_DATABASE={{ env_vars.MYSQL_DATABASE }}
+          MYSQL_DATABASE_USER={{ env_vars.MYSQL_DATABASE_USER }}
+          MYSQL_DATABASE_PASSWORD={{ env_vars.MYSQL_DATABASE_PASSWORD }}
+
+    - name: Create MySQL database if not exists
+      mysql_db:
+        login_host: "{{ env_vars.MYSQL_DATABASE_HOST }}"
+        login_user: "{{ env_vars.MYSQL_DATABASE_USER }}"
+        login_password: "{{ env_vars.MYSQL_DATABASE_PASSWORD }}"
+        name: "{{ env_vars.MYSQL_DATABASE }}"
+        state: present
+
+    - name: Edit todo.py to change the running port to 8080
+      lineinfile:
+        path: "{{ app_dir }}/todo.py"
+        regexp: 'app.run\(host=.*'
+        line: '    app.run(host="0.0.0.0", port={{ backend_port }})'
+
+    - name: Update API_URL in index.html
+      lineinfile:
+        path: "{{ app_dir }}/index.html"
+        regexp: 'const API_URL =.*'
+        line: "        const API_URL = 'http://{{ backend_server_ip }}:80';"
+
+    - name: Copy updated index.html to S3 bucket
+      aws_s3:
+        bucket: "{{ s3_bucket_name }}"
+        object: "index.html"
+        src: "{{ app_dir }}/index.html"
+        mode: put
+
+    - name: Run the Flask application using Gunicorn
+      shell: |
+        source {{ app_dir }}/venv/bin/activate
+        cd {{ app_dir }}
+        nohup gunicorn --bind 0.0.0.0:{{ backend_port }} todo:app > {{ app_dir }}/gunicorn.log 2>&1 &
+
+    - name: Wait for Gunicorn to start
+      pause:
+        seconds: 15
+
+    - name: Ensure Gunicorn is running
+      shell: pgrep gunicorn
+      register: gunicorn_status
+      retries: 5
+      delay: 2
+      until: gunicorn_status.rc == 0
+
+    - name: Check Gunicorn logs
+      shell: tail -n 50 {{ app_dir }}/gunicorn.log
+      register: gunicorn_logs
+      ignore_errors: yes
+
+    - debug:
+        var: gunicorn_logs.stdout_lines
+
+    - name: Start Nginx
+      command: sudo systemctl start nginx
+
+    - name: Enable Nginx
+      command: sudo systemctl enable nginx
+
+    - name: Configure nginx to proxy pass to Gunicorn
+      copy:
+        dest: /etc/nginx/conf.d/flask_app.conf
+        content: |
+          server {
+              listen 80;
+              server_name {{ backend_server_ip }};
+              
+              location / {
+                  proxy_pass http://127.0.0.1:{{ backend_port }};
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+      notify: restart nginx
+
+  handlers:
+    - name: restart nginx
+      command: sudo systemctl restart nginx
+
