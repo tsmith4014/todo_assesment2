@@ -26,7 +26,7 @@
     env_vars:
       MYSQL_DATABASE_HOST: "cpmysql-instance-1.cb2w0g4uwlya.us-east-1.rds.amazonaws.com"
       MYSQL_DATABASE_PORT: "3306"
-      MYSQL_DATABASE: "chaddb"
+      MYSQL_DATABASE: "chaddb" #This needs to be changed to the database name you want to create
       MYSQL_DATABASE_USER: "admin"
       MYSQL_DATABASE_PASSWORD: "Bravo2024"
 
